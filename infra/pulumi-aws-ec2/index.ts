@@ -14,8 +14,6 @@ const sshPublicKey = process.env.AWS_PUBLIC_SSH_KEY || '';
 const gitRepoUrl =
   process.env.GIT_REPO_URL || 'https://github.com/flexyzwork/lm-next-nest.git';
 const branch = process.env.GIT_BRANCH || 'main';
-const domainName = process.env.DOMAIN_NAME || 'lm.flexyz.work';
-const adminEmail = process.env.ADMIN_EMAIL || 'flexyzwork@gmail.com';
 const dockerPassword = process.env.DOCKER_PASSWORD || '';
 const dockerUsername = process.env.DOCKER_USERNAME || '';
 const existingEipAllocId = process.env.EXISTING_EIP_ALLOC_ID || '';
@@ -98,9 +96,6 @@ const instance = new aws.ec2.Instance('app-server', {
     echo "${clientEnv}" > /home/ubuntu/app/client/.env
 
     sudo chown -R ubuntu:ubuntu /home/ubuntu/app
-
-    # ssl 인증서 발급
-    sudo certbot certonly --standalone -d ${domainName} --email ${adminEmail} --agree-tos --non-interactive
 
     echo "🚀 배포 완료!"
   `,
