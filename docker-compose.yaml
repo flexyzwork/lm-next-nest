@@ -9,7 +9,10 @@ services:
       - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
       - ./nginx/entrypoint.sh:/entrypoint.sh:ro
       - ./nginx/certbot:/etc/letsencrypt
-      - ./nginx/www:/var/www/html
+      - ./nginx/certbot-webroot:/var/www/certbot
+      - /etc/letsencrypt/live/lm.flexyz.work:/etc/letsencrypt/live/lm.flexyz.work:ro
+      - /etc/letsencrypt/archive/lm.flexyz.work:/etc/letsencrypt/archive/lm.flexyz.work:ro
+      - /etc/letsencrypt/renewal:/etc/letsencrypt/renewal:ro
     networks:
       - app-network
     depends_on:
