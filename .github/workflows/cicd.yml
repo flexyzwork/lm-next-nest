@@ -1,0 +1,122 @@
+name: Publish and Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create .env file for frontend
+        run: |
+          cat <<EOF > ./client/.env
+          NEXT_PUBLIC_API_BASE_URL=${{ secrets.NEXT_PUBLIC_API_BASE_URL }}
+          NEXT_PUBLIC_LOCAL_URL=${{ secrets.NEXT_PUBLIC_LOCAL_URL }}
+          NEXT_PUBLIC_STRIPE_PUBLIC_KEY=${{ secrets.NEXT_PUBLIC_STRIPE_PUBLIC_KEY }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+          EOF
+
+      - name: Log in to OCI Registry
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login kix.ocir.io -u "${{ secrets.OCI_USERNAME }}" --password-stdin
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh/
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/github
+          chmod 600 ~/.ssh/github
+          echo "Host ec2" >> ~/.ssh/config
+          echo "  HostName ${{ secrets.SSH_HOST }}" >> ~/.ssh/config
+          echo "  User ubuntu" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/github" >> ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+
+      - name: Determine Active
+        id: active_version
+        run: |
+          ssh ec2 "cd app && git reset --hard && git pull origin main"
+          ACTIVE=$(ssh ec2 "bash ~/app/scripts/detect_active.sh")
+          echo "ACTIVE=$ACTIVE" > $GITHUB_ENV
+
+          if [[ "$ACTIVE" == "blue" ]]; then
+              echo "NEW=green" >> $GITHUB_ENV
+          else
+              echo "NEW=blue" >> $GITHUB_ENV
+          fi
+
+      - name: Check GITHUB_ENV
+        run: echo $GITHUB_ENV
+
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          push: true
+          platforms: linux/amd64
+          tags: |
+            kix.ocir.io/axunckhvyv1v/lm-backend:${{ env.NEW }}
+            kix.ocir.io/axunckhvyv1v/lm-backend:latest
+
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          push: true
+          platforms: linux/amd64
+          tags: |
+            kix.ocir.io/axunckhvyv1v/lm-frontend:${{ env.NEW }}
+            kix.ocir.io/axunckhvyv1v/lm-frontend:latest
+
+      - name: Deploy on EC2
+        run: |
+          ssh ec2 << 'EOF'
+          set -e
+
+          rollback() {
+              echo "❌ 배포 실패! 이전 컨테이너로 원복 중..."
+              docker-compose kill backend-${{ env.NEW }} frontend-${{ env.NEW }}
+              docker-compose rm -f backend-${{ env.NEW }} frontend-${{ env.NEW }}
+
+              docker system prune -a -f
+              exit 1
+          }
+          cleanup() {
+              echo "✅ 배포 성공! 이전 컨테이너 정리 중..."
+              docker-compose kill backend-${{ env.ACTIVE }} frontend-${{ env.ACTIVE }}
+              docker-compose rm -f backend-${{ env.ACTIVE }} frontend-${{ env.ACTIVE }}
+
+              sleep 5
+              docker system prune -a -f
+          }
+          trap rollback ERR
+
+          cd ~/app
+
+          docker-compose pull backend-${{ env.NEW }} frontend-${{ env.NEW }}
+          docker-compose up -d backend-${{ env.NEW }} frontend-${{ env.NEW }}
+
+          sleep 10
+          docker ps --format '{{.Names}}' | grep -q "${{ env.NEW }}" || rollback
+          docker ps --format '{{.Names}}' | grep -q "${{ env.NEW }}" || rollback
+
+          echo "✅ 배포 성공!"
+          echo "ACTIVE=${{ env.NEW }}" > .env
+          export $(grep -v '^#' .env | xargs)
+          echo "${{ env.ACTIVE }} -> $ACTIVE"
+
+          cleanup
+
+          docker ps --format '{{.Names}}' | grep -q "nginx" && docker-compose exec -e ACTIVE="$ACTIVE" nginx /bin/sh -c "envsubst '\$ACTIVE' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -t && nginx -s reload" || docker-compose up -d --force-recreate nginx
+
+          EOF
